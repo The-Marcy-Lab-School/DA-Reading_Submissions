@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
 """Grades one reading submission Issue. Run by .github/workflows/grade-submission.yml
 on every `issues: opened` event. Reads env vars set by the workflow, writes/updates
-results/<github-username>.json and leaderboard.json, and emits a `comment`/`label`/
-`close` output for the workflow's comment-and-close step to use.
+results/<github-username>.json (one student's full record) and
+results/by-reading/<reading-id>/<github-username>.json (a per-reading snapshot,
+for looking at how the whole class did on one specific reading), plus
+leaderboard.json. Emits a `comment`/`label`/`close` output for the workflow's
+comment-and-close step to use.
 
 Identity is taken from the issue's real author (ISSUE_AUTHOR, from GitHub's own
-event payload) — never from any free-text field a student typed in the reading —
+event payload), never from any free-text field a student typed in the reading,
 so it can't be spoofed by typing someone else's username.
+
+Each GitHub Issue is a fully independent, GitHub-ordered event — there's no
+"which push is most recent" ambiguity the way there can be with a rolling git
+branch. This script only ever looks at the one issue that triggered this run
+plus whatever's already on file, so it can't double-process or grade a stale
+submission out of order.
 """
 import json
 import os
 import re
-import sys
+
+MAX_ATTEMPTS_PER_READING = 2
 
 
 def extract_json(body):
@@ -45,46 +55,7 @@ def write_outputs(comment, label, close):
         f.write(f"close={'true' if close else 'false'}\n")
 
 
-def main():
-    issue_body = os.environ["ISSUE_BODY"]
-    issue_number = os.environ["ISSUE_NUMBER"]
-    issue_author = os.environ["ISSUE_AUTHOR"]
-
-    try:
-        payload = extract_json(issue_body)
-        reading_id = payload["readingId"]
-        score = payload["score"]
-        submitted_persona = payload.get("persona") or {"name": "Anonymous", "emoji": "❓"}
-    except Exception as e:
-        write_outputs(
-            "This submission couldn't be auto-graded (" + str(e) + "). "
-            "An instructor will take a look — no need to resubmit yet.",
-            "needs-review", False,
-        )
-        return
-
-    results_path = f"results/{issue_author}.json"
-    record = load(results_path, {"github_username": issue_author, "alias": None, "readings": {}})
-
-    # Alias locks on FIRST submission and is never overwritten by a later one —
-    # this is what keeps one student's leaderboard entries from fragmenting if
-    # they reroll their persona client-side between readings.
-    alias_locked_this_time = False
-    if not record.get("alias"):
-        record["alias"] = submitted_persona
-        alias_locked_this_time = True
-
-    existing = record["readings"].get(reading_id)
-    improved = existing is None or score["pct"] > existing["pct"]
-    if improved:
-        record["readings"][reading_id] = {
-            "earned": score["earned"], "possible": score["possible"],
-            "pct": score["pct"], "issue_number": issue_number,
-        }
-    save(results_path, record)
-
-    # Rebuild the whole leaderboard from every results/*.json — simplest way to
-    # stay consistent, and this repo is small enough that it's cheap to do.
+def rebuild_leaderboard(issue_number):
     leaderboard = []
     for fname in sorted(os.listdir("results")):
         if not fname.endswith(".json"):
@@ -104,17 +75,83 @@ def main():
     leaderboard.sort(key=lambda x: (-x["avg_pct"], -x["readings_completed"]))
     save("leaderboard.json", {"last_updated_issue": issue_number, "students": leaderboard})
 
+
+def main():
+    issue_body = os.environ["ISSUE_BODY"]
+    issue_number = os.environ["ISSUE_NUMBER"]
+    issue_author = os.environ["ISSUE_AUTHOR"]
+
+    try:
+        payload = extract_json(issue_body)
+        reading_id = payload["readingId"]
+        score = payload["score"]
+        submitted_persona = payload.get("persona") or {"name": "Anonymous", "emoji": "❓"}
+    except Exception as e:
+        write_outputs(
+            f"This submission couldn't be auto-graded ({e}). "
+            "An instructor will take a look. No need to resubmit yet.",
+            "needs-review", False,
+        )
+        return
+
+    results_path = f"results/{issue_author}.json"
+    record = load(results_path, {"github_username": issue_author, "alias": None, "readings": {}})
+
+    # Alias locks on the FIRST submission and is never overwritten by a later
+    # one. That's what keeps one student's leaderboard entries from
+    # fragmenting if they reroll their persona client-side between readings.
+    alias_locked_this_time = False
+    if not record.get("alias"):
+        record["alias"] = submitted_persona
+        alias_locked_this_time = True
+
+    existing = record["readings"].get(reading_id)
+    attempt_count = (existing.get("submission_count", 1) if existing else 0) + 1
+
+    if existing and existing.get("submission_count", 1) >= MAX_ATTEMPTS_PER_READING:
+        write_outputs(
+            f"You've already used both submission attempts for this reading. "
+            f"Your recorded score stays at **{existing['earned']} / {existing['possible']} "
+            f"points ({existing['pct']}%)**. Reach out to an instructor if you think this "
+            "needs a second look.",
+            "attempt-limit-reached", True,
+        )
+        save(results_path, record)  # persist alias lock even if the score doesn't change
+        return
+
+    improved = existing is None or score["pct"] > existing["pct"]
+    if improved:
+        record["readings"][reading_id] = {
+            "earned": score["earned"], "possible": score["possible"],
+            "pct": score["pct"], "issue_number": issue_number,
+            "submission_count": attempt_count,
+        }
+    else:
+        record["readings"][reading_id]["submission_count"] = attempt_count
+    save(results_path, record)
+
+    # Per-reading snapshot too, so "how did everyone do on THIS reading" is a
+    # single folder listing instead of opening every student's file.
+    save(f"results/by-reading/{reading_id}/{issue_author}.json", {
+        "github_username": issue_author,
+        **record["readings"][reading_id],
+    })
+
+    rebuild_leaderboard(issue_number)
+
     alias = record["alias"]
     avg_pct = round(
         sum(v["pct"] for v in record["readings"].values()) / len(record["readings"]), 1
     )
-    lines = [f"Recorded — **{score['earned']} / {score['possible']} points ({score['pct']}%)** on this reading."]
+    lines = [f"Recorded: **{score['earned']} / {score['possible']} points ({score['pct']}%)** on this reading."]
     if not improved and existing is not None:
-        lines[0] += " (Your earlier attempt already scored as well or better, so that's the one kept.)"
+        lines[0] += " Your earlier attempt already scored as well or better, so that's the one kept."
+    if attempt_count >= MAX_ATTEMPTS_PER_READING:
+        lines.append("That was your second and final submission attempt for this reading.")
     if alias_locked_this_time:
         lines.append(
-            f"Your reading persona is now locked in as **{alias['emoji']} {alias['name']}** — "
-            "that's what shows on the leaderboard from here on, no matter what you reroll to "
+            f"Your reading persona is now locked in as **{alias['emoji']} {alias['name']}**. "
+            "That's what shows on the leaderboard from here on, no matter what you reroll to "
             "client-side on a future reading."
         )
     lines.append(

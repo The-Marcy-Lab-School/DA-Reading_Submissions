@@ -23,7 +23,6 @@ jobs:
         run: python3 scripts/grade.py
 
       - name: Commit results
-        if: steps.grade.outputs.label == 'graded'
         run: |
           git config user.name "reading-grader"
           git config user.email "actions@github.com"

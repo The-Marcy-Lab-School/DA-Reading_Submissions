@@ -45,16 +45,35 @@ reading instead of fragmenting into several different-looking entries.
 
 - `results/<your-github-username>.json` — your full record: every reading
   you've submitted, your score on each (best attempt kept if you resubmit),
-  and your locked alias. Visible to collaborators on this repo (instructors
-  and classmates), not the public internet.
+  and your locked alias.
+- `results/by-reading/<reading-id>/<your-github-username>.json` — the same
+  score, filed under the reading instead of under you, so an instructor can
+  see how the whole class did on one specific reading without opening every
+  student's file individually.
 - `leaderboard.json` — alias + emoji, readings completed, and average score
-  percentage across all your readings, for everyone. No real names or
-  GitHub handles in this file.
+  percentage across all your readings, for everyone.
+
+**You get 2 submission attempts per reading.** Your best of the two is what's
+kept. A third attempt is recorded as "attempt limit reached" and doesn't
+change your score. Each submission is its own independent GitHub Issue, so
+there's no ambiguity about which one is "the real one": whichever issue
+triggered a grading run is exactly the one that run looks at.
 
 Grading trusts the score your browser computed and submitted — this is
 formative practice, not a proctored exam, so there's no server-side
 re-grading of every answer. Please don't edit your own score in devtools;
 it defeats the point of practicing before lecture.
+
+## Who can see what (important)
+
+Right now, this repo's default GitHub permission model means **any
+collaborator with Read access can see every issue**, not just their own.
+Making the repo private stops the public internet from seeing submissions,
+but on its own it does **not** stop one student from browsing another
+student's answers and score. If per-student privacy from classmates
+(not just the public) matters, this needs a different structure than "one
+shared repo, everyone's a collaborator" — see the note Angelica and Claude
+are working through on this before rolling out broadly.
 
 ## For instructors
 
