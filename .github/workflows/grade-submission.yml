@@ -1,0 +1,56 @@
+name: Grade reading submission
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+  contents: write
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run grader
+        id: grade
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+        run: python3 scripts/grade.py
+
+      - name: Commit results
+        if: steps.grade.outputs.label == 'graded'
+        run: |
+          git config user.name "reading-grader"
+          git config user.email "actions@github.com"
+          git add results/ leaderboard.json
+          git diff --cached --quiet && echo "No score change to commit." || git commit -m "Grade submission #${{ github.event.issue.number }} from ${{ github.event.issue.user.login }}"
+          git push
+
+      - name: Comment on the issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `${{ steps.grade.outputs.comment }}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number, body,
+            });
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number, labels: ["${{ steps.grade.outputs.label }}"],
+            });
+
+      - name: Close if graded
+        if: steps.grade.outputs.close == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.update({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number, state: "closed",
+            });
